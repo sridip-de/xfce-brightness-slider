@@ -90,8 +90,3 @@ MIT License – feel free to use, modify, and share.
 ```
 
 ---
-
-**Recommendation:** Replace `yourusername` in the GitHub link with your actual username before posting.  
-**Next step:** Do you want me to also prepare a `.desktop` file so you can auto-start this app on login?
-```
-
