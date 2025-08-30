@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+import gi, subprocess, shutil
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("AppIndicator3", "0.1")
+from gi.repository import Gtk, AppIndicator3
+
+
+class RedshiftTray:
+    def __init__(self):
+        # Defaults
+        self.current_temp = 4500
+        self.current_brightness = 1.0
+
+        # Ensure redshift exists
+        if not shutil.which("redshift"):
+            print("Error: redshift not found. Please install it.")
+            exit(1)
+
+        # Indicator
+        self.ind = AppIndicator3.Indicator.new(
+            "redshift-tray",
+            "display-brightness",  # icon from system theme
+            AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+        )
+        self.ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+
+        # Create a dummy menu with one item → clicking this will open popup
+        menu = Gtk.Menu()
+        open_item = Gtk.MenuItem(label="Controls")
+        open_item.connect("activate", self.show_window)
+        menu.append(open_item)
+
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", Gtk.main_quit)
+        menu.append(quit_item)
+
+        menu.show_all()
+        self.ind.set_menu(menu)
+
+        # Popup window
+        self.win = Gtk.Window(title="Redshift Control")
+        self.win.set_default_size(250, 140)
+        self.win.set_resizable(False)
+        self.win.set_skip_taskbar_hint(True)  # no taskbar button
+        self.win.set_position(Gtk.WindowPosition.CENTER)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        self.win.add(vbox)
+
+        # Temperature slider
+        temp_adj = Gtk.Adjustment(value=4500, lower=1000, upper=10000,
+                                  step_increment=100, page_increment=500)
+        self.temp_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=temp_adj)
+        self.temp_scale.set_value(self.current_temp)
+        self.temp_scale.set_digits(0)
+        self.temp_scale.connect("value-changed", self.on_temp_changed)
+        vbox.pack_start(Gtk.Label(label="Temperature (K)"), False, False, 0)
+        vbox.pack_start(self.temp_scale, False, False, 0)
+
+        # Brightness slider
+        bright_adj = Gtk.Adjustment(value=1.0, lower=0.1, upper=1.0,
+                                    step_increment=0.05, page_increment=0.1)
+        self.bright_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=bright_adj)
+        self.bright_scale.set_value(self.current_brightness)
+        self.bright_scale.set_digits(2)
+        self.bright_scale.connect("value-changed", self.on_bright_changed)
+        vbox.pack_start(Gtk.Label(label="Brightness"), False, False, 0)
+        vbox.pack_start(self.bright_scale, False, False, 0)
+
+        self.win.connect("delete-event", self.on_hide)
+
+    def show_window(self, *a):
+        self.win.show_all()
+        self.win.present()
+
+    def on_hide(self, *a):
+        self.win.hide()
+        return True
+
+    def apply_settings(self):
+        subprocess.Popen([
+            "redshift", "-P",
+            "-O", str(self.current_temp),
+            "-b", str(self.current_brightness)
+        ])
+
+    def on_temp_changed(self, scale):
+        self.current_temp = int(scale.get_value())
+        self.apply_settings()
+
+    def on_bright_changed(self, scale):
+        self.current_brightness = round(scale.get_value(), 2)
+        self.apply_settings()
+
+
+if __name__ == "__main__":
+    RedshiftTray()
+    Gtk.main()
+
