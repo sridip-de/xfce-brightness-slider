@@ -47,7 +47,7 @@ sudo dnf install redshift python3-gobject libappindicator-gtk3
 1. Clone this repository:
 
    ```bash
-   git clone https://github.com/yourusername/redshift-tray.git
+   git https://github.com/sridip-de/xfce-brightness-slider.git
    cd redshift-tray
    ```
 
