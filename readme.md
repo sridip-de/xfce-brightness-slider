@@ -54,13 +54,13 @@ sudo dnf install redshift python3-gobject libappindicator-gtk3
 2. Make script executable:
 
    ```bash
-   chmod +x redshift.py
+   chmod +x Brightness-Slider
    ```
 
 3. Run:
 
    ```bash
-   ./redshift.py
+   ./Brightness-Slider
    ```
 
 ---
