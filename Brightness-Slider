@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-import gi, subprocess, shutil, time, os
+import gi, subprocess, shutil, time, os, json
 gi.require_version("Gtk", "3.0")
 gi.require_version("AppIndicator3", "0.1")
 from gi.repository import Gtk, AppIndicator3, GLib
 
 class RedshiftTray:
     def __init__(self):
-        # Defaults
-        self.current_temp = 4500
-        self.current_brightness = 1.0
+        # Config file for persistence
+        self.config_file = os.path.expanduser("~/.config/redshift-tray.json")
+        
+        # Load saved settings or use defaults
+        self.load_settings()
+        
         self.update_timer = None
         self.is_window_created = False
+        self.popup_window = None
         
         # Ensure redshift exists
         if not shutil.which("redshift"):
@@ -28,17 +32,99 @@ class RedshiftTray:
         )
         self.ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         
-        # Minimal tray menu
+        # Create tray menu with brightness slider
+        self.create_tray_menu()
+        
+        # Apply saved settings
+        self.apply_settings()
+    
+    def load_settings(self):
+        """Load settings from config file"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                self.current_temp = config.get('temperature', 4500)
+                self.current_brightness = config.get('brightness', 1.0)
+            else:
+                self.current_temp = 4500
+                self.current_brightness = 1.0
+        except:
+            self.current_temp = 4500
+            self.current_brightness = 1.0
+    
+    def save_settings(self):
+        """Save settings to config file"""
+        try:
+            os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+            config = {
+                'temperature': self.current_temp,
+                'brightness': self.current_brightness
+            }
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f)
+        except Exception as e:
+            print(f"Failed to save settings: {e}")
+    
+    def create_tray_menu(self):
+        """Create tray menu with brightness slider"""
         menu = Gtk.Menu()
-        open_item = Gtk.MenuItem(label="Controls")
-        open_item.connect("activate", self.show_window)
-        menu.append(open_item)
+        
+        # Brightness label
+        bright_label = Gtk.MenuItem()
+        bright_label.set_label(f"Brightness: {self.current_brightness:.2f}")
+        bright_label.set_sensitive(False)  # Make it non-clickable
+        menu.append(bright_label)
+        self.tray_bright_label = bright_label
+        
+        # Brightness slider in menu
+        bright_item = Gtk.MenuItem()
+        bright_adj = Gtk.Adjustment(value=self.current_brightness, lower=0.1, upper=1.0,
+                                   step_increment=0.05, page_increment=0.1)
+        self.tray_bright_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=bright_adj)
+        self.tray_bright_scale.set_digits(2)
+        self.tray_bright_scale.set_draw_value(False)
+        self.tray_bright_scale.set_size_request(150, -1)
+        self.tray_bright_scale.connect("value-changed", self.on_tray_bright_changed)
+        bright_item.add(self.tray_bright_scale)
+        menu.append(bright_item)
+        
+        # Separator
+        separator = Gtk.SeparatorMenuItem()
+        menu.append(separator)
+        
+        # Controls button
+        controls_item = Gtk.MenuItem(label="Controls")
+        controls_item.connect("activate", self.show_window)
+        menu.append(controls_item)
+        
+        # Quit button
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", self.on_quit)
+        menu.append(quit_item)
+        
         menu.show_all()
         self.ind.set_menu(menu)
+        self.tray_menu = menu
+    
+    def update_tray_brightness_label(self):
+        """Update brightness label in tray menu"""
+        self.tray_bright_label.set_label(f"Brightness: {self.current_brightness:.2f}")
+    
+    def on_tray_bright_changed(self, scale):
+        """Handle brightness change from tray menu"""
+        self.current_brightness = round(scale.get_value(), 2)
+        self.update_tray_brightness_label()
         
-        # Apply initial settings and show window
-        self.apply_settings()
-        self.show_window()
+        # Update main window brightness scale if it exists
+        if self.is_window_created:
+            self.bright_scale.handler_block_by_func(self.on_bright_changed)
+            self.bright_scale.set_value(self.current_brightness)
+            self.bright_scale.handler_unblock_by_func(self.on_bright_changed)
+            self._update_labels()
+        
+        self.save_settings()
+        self._schedule_update()
     
     def _kill_redshift(self):
         """Efficiently kill redshift processes"""
@@ -53,14 +139,19 @@ class RedshiftTray:
         if self.is_window_created:
             return
         
-        self.win = Gtk.Window(title="Redshift Control")
-        self.win.set_default_size(280, 180)
+        self.win = Gtk.Window(title="Redshift Control Panel")
+        self.win.set_default_size(320, 220)
         self.win.set_resizable(False)
         self.win.set_skip_taskbar_hint(True)
         self.win.set_position(Gtk.WindowPosition.CENTER)
         
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=15)
         self.win.add(vbox)
+        
+        # Title
+        title_label = Gtk.Label()
+        title_label.set_markup("<b>Redshift Control Panel</b>")
+        vbox.pack_start(title_label, False, False, 0)
         
         # Temperature controls
         self.temp_label = Gtk.Label()
@@ -91,30 +182,39 @@ class RedshiftTray:
         vbox.pack_start(self.bright_scale, False, False, 0)
         
         # Preset buttons (compact)
-        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
+        preset_label = Gtk.Label()
+        preset_label.set_markup("<b>Quick Presets:</b>")
+        preset_label.set_halign(Gtk.Align.START)
+        vbox.pack_start(preset_label, False, False, 5)
+        
+        preset_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         preset_box.set_halign(Gtk.Align.CENTER)
         
-        presets = [("Day", 6500, 1.0), ("Warm", 4500, 0.9), ("Night", 2700, 0.7)]
+        presets = [("Daylight", 6500, 1.0), ("Warm", 4500, 0.9), ("Night", 2700, 0.7)]
         for name, temp, brightness in presets:
             btn = Gtk.Button(label=name)
             btn.connect("clicked", lambda w, t=temp, b=brightness: self.apply_preset(t, b))
             preset_box.pack_start(btn, True, True, 0)
         
-        vbox.pack_start(preset_box, False, False, 3)
+        vbox.pack_start(preset_box, False, False, 0)
         
         # Control buttons
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         button_box.set_halign(Gtk.Align.CENTER)
         
-        reset_btn = Gtk.Button(label="Reset")
+        reset_btn = Gtk.Button(label="Reset to Default")
         reset_btn.connect("clicked", self.reset_settings)
         button_box.pack_start(reset_btn, False, False, 0)
         
-        quit_btn = Gtk.Button(label="Quit")
+        close_btn = Gtk.Button(label="Close")
+        close_btn.connect("clicked", self.on_hide)
+        button_box.pack_start(close_btn, False, False, 0)
+        
+        quit_btn = Gtk.Button(label="Quit Application")
         quit_btn.connect("clicked", self.on_quit)
         button_box.pack_start(quit_btn, False, False, 0)
         
-        vbox.pack_start(button_box, False, False, 0)
+        vbox.pack_start(button_box, False, False, 5)
         
         # Window events
         self.win.connect("delete-event", self.on_hide)
@@ -129,13 +229,17 @@ class RedshiftTray:
         self.win.present()
     
     def on_hide(self, *args):
-        self.win.hide()
+        if self.is_window_created:
+            self.win.hide()
         return True
     
     def on_quit(self, *args):
         # Clean shutdown
         if self.update_timer:
             GLib.source_remove(self.update_timer)
+        
+        # Save settings before quitting
+        self.save_settings()
         
         # Reset display and cleanup
         try:
@@ -182,17 +286,32 @@ class RedshiftTray:
     def on_temp_changed(self, scale):
         self.current_temp = int(scale.get_value())
         self._update_labels()
+        self.save_settings()
         self._schedule_update()
     
     def on_bright_changed(self, scale):
         self.current_brightness = round(scale.get_value(), 2)
         self._update_labels()
+        
+        # Update tray brightness slider and label
+        self.tray_bright_scale.handler_block_by_func(self.on_tray_bright_changed)
+        self.tray_bright_scale.set_value(self.current_brightness)
+        self.tray_bright_scale.handler_unblock_by_func(self.on_tray_bright_changed)
+        self.update_tray_brightness_label()
+        
+        self.save_settings()
         self._schedule_update()
     
     def apply_preset(self, temp, brightness):
         """Apply preset efficiently"""
         self.current_temp = temp
         self.current_brightness = brightness
+        
+        # Update tray brightness
+        self.tray_bright_scale.handler_block_by_func(self.on_tray_bright_changed)
+        self.tray_bright_scale.set_value(self.current_brightness)
+        self.tray_bright_scale.handler_unblock_by_func(self.on_tray_bright_changed)
+        self.update_tray_brightness_label()
         
         if self.is_window_created:
             # Block signals temporarily
@@ -207,6 +326,7 @@ class RedshiftTray:
             
             self._update_labels()
         
+        self.save_settings()
         self.apply_settings()
     
     def reset_settings(self, *args):
