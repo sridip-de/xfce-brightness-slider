@@ -2,7 +2,8 @@
 import gi, subprocess, shutil, time, os, json
 gi.require_version("Gtk", "3.0")
 gi.require_version("AppIndicator3", "0.1")
-from gi.repository import Gtk, AppIndicator3, GLib
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gtk, AppIndicator3, GLib, Gdk
 
 class RedshiftTray:
     def __init__(self):
@@ -14,7 +15,7 @@ class RedshiftTray:
         
         self.update_timer = None
         self.is_window_created = False
-        self.popup_window = None
+        self.use_status_icon = False
         
         # Ensure redshift exists
         if not shutil.which("redshift"):
@@ -24,16 +25,8 @@ class RedshiftTray:
         # Kill any existing redshift processes
         self._kill_redshift()
         
-        # Indicator (lightweight)
-        self.ind = AppIndicator3.Indicator.new(
-            "redshift-tray",
-            "display-brightness",
-            AppIndicator3.IndicatorCategory.APPLICATION_STATUS
-        )
-        self.ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        
-        # Create tray menu with brightness slider
-        self.create_tray_menu()
+        # Setup system tray with scroll support
+        self.setup_tray_icon()
         
         # Apply saved settings
         self.apply_settings()
@@ -66,32 +59,43 @@ class RedshiftTray:
         except Exception as e:
             print(f"Failed to save settings: {e}")
     
-    def create_tray_menu(self):
-        """Create tray menu with brightness slider"""
+    def setup_tray_icon(self):
+        """Setup system tray with scroll support"""
+        try:
+            # Try StatusIcon first for scroll support
+            self.status_icon = Gtk.StatusIcon.new_from_icon_name("display-brightness")
+            self.status_icon.set_tooltip_text(f"Redshift Control - Brightness: {self.current_brightness:.2f}\nScroll to adjust")
+            self.status_icon.connect("scroll-event", self.on_scroll_event)
+            self.status_icon.connect("activate", self.show_window)
+            self.status_icon.connect("popup-menu", self.on_popup_menu)
+            self.use_status_icon = True
+            print("Using StatusIcon with scroll support")
+            
+        except Exception:
+            # Fallback to AppIndicator3 without scroll
+            self.ind = AppIndicator3.Indicator.new(
+                "redshift-tray",
+                "display-brightness",
+                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+            )
+            self.ind.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            self.create_app_indicator_menu()
+            self.use_status_icon = False
+            print("Using AppIndicator3 (no scroll support)")
+    
+    def create_app_indicator_menu(self):
+        """Create minimal menu for AppIndicator3"""
         menu = Gtk.Menu()
         
-        # Brightness label
-        bright_label = Gtk.MenuItem()
-        bright_label.set_label(f"Brightness: {self.current_brightness:.2f}")
-        bright_label.set_sensitive(False)  # Make it non-clickable
-        menu.append(bright_label)
-        self.tray_bright_label = bright_label
-        
-        # Brightness slider in menu
-        bright_item = Gtk.MenuItem()
-        bright_adj = Gtk.Adjustment(value=self.current_brightness, lower=0.1, upper=1.0,
-                                   step_increment=0.05, page_increment=0.1)
-        self.tray_bright_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=bright_adj)
-        self.tray_bright_scale.set_digits(2)
-        self.tray_bright_scale.set_draw_value(False)
-        self.tray_bright_scale.set_size_request(150, -1)
-        self.tray_bright_scale.connect("value-changed", self.on_tray_bright_changed)
-        bright_item.add(self.tray_bright_scale)
-        menu.append(bright_item)
+        # Status label
+        status_item = Gtk.MenuItem()
+        status_item.set_label(f"Brightness: {self.current_brightness:.2f}")
+        status_item.set_sensitive(False)
+        menu.append(status_item)
+        self.status_label = status_item
         
         # Separator
-        separator = Gtk.SeparatorMenuItem()
-        menu.append(separator)
+        menu.append(Gtk.SeparatorMenuItem())
         
         # Controls button
         controls_item = Gtk.MenuItem(label="Controls")
@@ -105,42 +109,95 @@ class RedshiftTray:
         
         menu.show_all()
         self.ind.set_menu(menu)
-        self.tray_menu = menu
     
-    def update_tray_brightness_label(self):
-        """Update brightness label in tray menu"""
-        self.tray_bright_label.set_label(f"Brightness: {self.current_brightness:.2f}")
-    
-    def on_tray_bright_changed(self, scale):
-        """Handle brightness change from tray menu"""
-        self.current_brightness = round(scale.get_value(), 2)
-        self.update_tray_brightness_label()
+    def create_status_icon_menu(self):
+        """Create minimal menu for StatusIcon"""
+        menu = Gtk.Menu()
         
-        # Update main window brightness scale if it exists
+        # Status label
+        status_item = Gtk.MenuItem()
+        status_item.set_label(f"Brightness: {self.current_brightness:.2f}")
+        status_item.set_sensitive(False)
+        menu.append(status_item)
+        
+        # Separator
+        menu.append(Gtk.SeparatorMenuItem())
+        
+        # Controls button
+        controls_item = Gtk.MenuItem(label="Controls")
+        controls_item.connect("activate", self.show_window)
+        menu.append(controls_item)
+        
+        # Quit button
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", self.on_quit)
+        menu.append(quit_item)
+        
+        menu.show_all()
+        return menu
+    
+    def on_popup_menu(self, icon, button, time):
+        """Handle right-click on StatusIcon"""
+        menu = self.create_status_icon_menu()
+        menu.popup(None, None, Gtk.StatusIcon.position_menu, icon, button, time)
+    
+    def on_scroll_event(self, icon, event):
+        """Handle mouse wheel scroll over tray icon"""
+        try:
+            direction = event.direction
+            brightness_step = 0.05
+            
+            if direction == Gdk.ScrollDirection.UP:
+                new_brightness = min(1.0, self.current_brightness + brightness_step)
+            elif direction == Gdk.ScrollDirection.DOWN:
+                new_brightness = max(0.1, self.current_brightness - brightness_step)
+            else:
+                return False
+            
+            if abs(new_brightness - self.current_brightness) > 0.01:
+                self.current_brightness = round(new_brightness, 2)
+                self.update_all_ui()
+                self.save_settings()
+                self._schedule_update()
+            
+            return True
+        except Exception as e:
+            print(f"Scroll event error: {e}")
+            return False
+    
+    def update_all_ui(self):
+        """Update all UI elements efficiently"""
+        # Update tooltip for StatusIcon
+        if self.use_status_icon:
+            tooltip = f"Redshift Control - Brightness: {self.current_brightness:.2f}\nScroll to adjust"
+            self.status_icon.set_tooltip_text(tooltip)
+        else:
+            # Update AppIndicator status label
+            if hasattr(self, 'status_label'):
+                self.status_label.set_label(f"Brightness: {self.current_brightness:.2f}")
+        
+        # Update main window if open
         if self.is_window_created:
             self.bright_scale.handler_block_by_func(self.on_bright_changed)
             self.bright_scale.set_value(self.current_brightness)
             self.bright_scale.handler_unblock_by_func(self.on_bright_changed)
-            self._update_labels()
-        
-        self.save_settings()
-        self._schedule_update()
+            self.bright_label.set_markup(f"<b>Brightness: {self.current_brightness:.2f}</b>")
     
     def _kill_redshift(self):
-        """Efficiently kill redshift processes"""
+        """Kill redshift processes efficiently"""
         try:
             subprocess.run(["pkill", "-f", "redshift"], 
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)
         except:
             pass
     
     def _create_window(self):
-        """Lazy window creation to save initial memory"""
+        """Create main control window"""
         if self.is_window_created:
             return
         
         self.win = Gtk.Window(title="Redshift Control Panel")
-        self.win.set_default_size(320, 220)
+        self.win.set_default_size(320, 200)
         self.win.set_resizable(False)
         self.win.set_skip_taskbar_hint(True)
         self.win.set_position(Gtk.WindowPosition.CENTER)
@@ -156,6 +213,7 @@ class RedshiftTray:
         # Temperature controls
         self.temp_label = Gtk.Label()
         self.temp_label.set_halign(Gtk.Align.START)
+        self.temp_label.set_markup(f"<b>Temperature: {self.current_temp}K</b>")
         
         temp_adj = Gtk.Adjustment(value=self.current_temp, lower=1000, upper=10000,
                                   step_increment=100, page_increment=500)
@@ -170,6 +228,7 @@ class RedshiftTray:
         # Brightness controls
         self.bright_label = Gtk.Label()
         self.bright_label.set_halign(Gtk.Align.START)
+        self.bright_label.set_markup(f"<b>Brightness: {self.current_brightness:.2f}</b>")
         
         bright_adj = Gtk.Adjustment(value=self.current_brightness, lower=0.1, upper=1.0,
                                     step_increment=0.05, page_increment=0.1)
@@ -181,7 +240,7 @@ class RedshiftTray:
         vbox.pack_start(self.bright_label, False, False, 0)
         vbox.pack_start(self.bright_scale, False, False, 0)
         
-        # Preset buttons (compact)
+        # Preset buttons
         preset_label = Gtk.Label()
         preset_label.set_markup("<b>Quick Presets:</b>")
         preset_label.set_halign(Gtk.Align.START)
@@ -199,10 +258,10 @@ class RedshiftTray:
         vbox.pack_start(preset_box, False, False, 0)
         
         # Control buttons
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         button_box.set_halign(Gtk.Align.CENTER)
         
-        reset_btn = Gtk.Button(label="Reset Display")
+        reset_btn = Gtk.Button(label="Reset")
         reset_btn.connect("clicked", self.reset_settings)
         button_box.pack_start(reset_btn, False, False, 0)
         
@@ -210,22 +269,15 @@ class RedshiftTray:
         close_btn.connect("clicked", self.on_hide)
         button_box.pack_start(close_btn, False, False, 0)
         
-        quit_btn = Gtk.Button(label="Quit (Keep Settings)")
+        quit_btn = Gtk.Button(label="Quit")
         quit_btn.connect("clicked", self.on_quit)
         button_box.pack_start(quit_btn, False, False, 0)
-        
-        # Add option to quit and reset display
-        quit_reset_btn = Gtk.Button(label="Quit & Reset Display")
-        quit_reset_btn.connect("clicked", self.on_quit_and_reset)
-        button_box.pack_start(quit_reset_btn, False, False, 0)
         
         vbox.pack_start(button_box, False, False, 5)
         
         # Window events
         self.win.connect("delete-event", self.on_hide)
-        
         self.is_window_created = True
-        self._update_labels()
     
     def show_window(self, *args):
         if not self.is_window_created:
@@ -239,34 +291,10 @@ class RedshiftTray:
         return True
     
     def on_quit(self, *args):
-        # Clean shutdown
         if self.update_timer:
             GLib.source_remove(self.update_timer)
         
-        # Save settings before quitting
         self.save_settings()
-        
-        # DON'T reset display - keep current redshift settings
-        # Just kill the redshift process but leave the display as-is
-        self._kill_redshift()
-        Gtk.main_quit()
-    
-    def on_quit_and_reset(self, *args):
-        """Quit application and reset display to system defaults"""
-        # Clean shutdown
-        if self.update_timer:
-            GLib.source_remove(self.update_timer)
-        
-        # Save settings before quitting
-        self.save_settings()
-        
-        # Reset display to system defaults
-        try:
-            subprocess.run(["redshift", "-x"], timeout=2,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except:
-            pass
-        
         self._kill_redshift()
         Gtk.main_quit()
     
@@ -274,7 +302,6 @@ class RedshiftTray:
         """Apply redshift settings efficiently"""
         self._kill_redshift()
         
-        # Single redshift call with combined settings
         try:
             subprocess.Popen([
                 "redshift", "-P", "-O", str(self.current_temp), 
@@ -287,7 +314,7 @@ class RedshiftTray:
         """Debounced updates to prevent excessive calls"""
         if self.update_timer:
             GLib.source_remove(self.update_timer)
-        self.update_timer = GLib.timeout_add(150, self._delayed_apply)
+        self.update_timer = GLib.timeout_add(100, self._delayed_apply)
     
     def _delayed_apply(self):
         """Apply settings after delay"""
@@ -295,29 +322,16 @@ class RedshiftTray:
         self.update_timer = None
         return False
     
-    def _update_labels(self):
-        """Update labels efficiently"""
-        if not self.is_window_created:
-            return
-        self.temp_label.set_markup(f"<b>Temperature: {self.current_temp}K</b>")
-        self.bright_label.set_markup(f"<b>Brightness: {self.current_brightness:.2f}</b>")
-    
     def on_temp_changed(self, scale):
         self.current_temp = int(scale.get_value())
-        self._update_labels()
+        self.temp_label.set_markup(f"<b>Temperature: {self.current_temp}K</b>")
         self.save_settings()
         self._schedule_update()
     
     def on_bright_changed(self, scale):
         self.current_brightness = round(scale.get_value(), 2)
-        self._update_labels()
-        
-        # Update tray brightness slider and label
-        self.tray_bright_scale.handler_block_by_func(self.on_tray_bright_changed)
-        self.tray_bright_scale.set_value(self.current_brightness)
-        self.tray_bright_scale.handler_unblock_by_func(self.on_tray_bright_changed)
-        self.update_tray_brightness_label()
-        
+        self.bright_label.set_markup(f"<b>Brightness: {self.current_brightness:.2f}</b>")
+        self.update_all_ui()
         self.save_settings()
         self._schedule_update()
     
@@ -325,12 +339,6 @@ class RedshiftTray:
         """Apply preset efficiently"""
         self.current_temp = temp
         self.current_brightness = brightness
-        
-        # Update tray brightness
-        self.tray_bright_scale.handler_block_by_func(self.on_tray_bright_changed)
-        self.tray_bright_scale.set_value(self.current_brightness)
-        self.tray_bright_scale.handler_unblock_by_func(self.on_tray_bright_changed)
-        self.update_tray_brightness_label()
         
         if self.is_window_created:
             # Block signals temporarily
@@ -343,26 +351,26 @@ class RedshiftTray:
             self.temp_scale.handler_unblock_by_func(self.on_temp_changed)
             self.bright_scale.handler_unblock_by_func(self.on_bright_changed)
             
-            self._update_labels()
+            self.temp_label.set_markup(f"<b>Temperature: {self.current_temp}K</b>")
+            self.bright_label.set_markup(f"<b>Brightness: {self.current_brightness:.2f}</b>")
         
+        self.update_all_ui()
         self.save_settings()
         self.apply_settings()
     
     def reset_settings(self, *args):
         """Reset to system defaults"""
-        # Only reset when user explicitly clicks Reset button
         try:
             subprocess.run(["redshift", "-x"], timeout=2,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.2)  # Brief pause to let reset complete
+            time.sleep(0.2)
         except:
             pass
         self.apply_preset(6500, 1.0)
 
 if __name__ == "__main__":
-    # Optimize Python for lower memory usage
     import gc
-    gc.set_threshold(700, 10, 10)  # More aggressive garbage collection
+    gc.set_threshold(700, 10, 10)
     
     app = RedshiftTray()
     
