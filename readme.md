@@ -1,6 +1,3 @@
-**Draft:**
-Here’s a clean `README.md` you can use on GitHub for your project.
-
 ````markdown
 # Redshift Tray Controller
 
@@ -74,7 +71,9 @@ sudo dnf install redshift python3-gobject libappindicator-gtk3
 * **Quit** exits the tray app and resets Redshift settings.
 
 ---
-
+## Screenshot
+![screenshot](https://res.cloudinary.com/dmtfpnxrf/image/upload/v1762541210/Screenshot_2025-11-08_00-13-41_h8amft.png)
+---
 ## Notes
 
 * The app uses `redshift -P -O <temp> -b <brightness>` internally.
